@@ -1,0 +1,165 @@
+# LinkedIn URN via PowerShell — Full Guide
+
+---
+
+## What is this?
+LinkedIn uses OAuth 2.0 to authenticate users. To interact with the LinkedIn API (post content, get profile info, etc.) you need an **access token**. Your **URN** (Uniform Resource Name) is your unique LinkedIn member ID, looks like `urn:li:person:XXXXXXX`. You need this for automation tools like n8n.
+
+---
+
+## What you need before starting
+
+**1. LinkedIn Developer Account**
+- Go to linkedin.com/developers
+- Sign in with your LinkedIn account
+
+**2. Create or open your App**
+- Go to linkedin.com/developers/apps
+- Click your app (or create new one)
+- Go to **Auth** tab
+- You will find your **Client ID** and **Client Secret** here
+
+**3. Add your Redirect URI**
+- Still on the **Auth** tab
+- Under "OAuth 2.0 settings" → "Authorized Redirect URLs"
+- Add your redirect URI exactly, e.g. `https://auto.devdabs.com/rest/oauth2-credential/callback`
+- This must match exactly what you use in the commands — even a trailing slash will break it
+
+**4. Add required OAuth scopes**
+- Go to **Products** tab in your app
+- Request access to **Sign In with LinkedIn using OpenID Connect**
+- This gives you: `openid`, `profile`, `email`
+- For posting: also request **Share on LinkedIn** which gives `w_member_social`
+
+---
+
+## Step 1 — Open the Authorization URL
+
+Run this in PowerShell (replace YOUR_CLIENT_ID and YOUR_REDIRECT_URI_ENCODED):
+```powershell
+Start-Process "https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=YOUR_CLIENT_ID&redirect_uri=YOUR_REDIRECT_URI_ENCODED&scope=openid%20profile%20email%20w_member_social&state=123456"
+```
+
+**What happens:**
+- Browser opens LinkedIn login page
+- You log in and click Allow/Authorize
+- LinkedIn redirects you to your redirect URI
+- The page may show an error — that is fine and expected
+- Look at the browser address bar
+
+**The URL will look like:**
+```
+https://your-redirect-uri/callback?code=AQTcbLtV3x......&state=123456
+```
+
+**Copy the code value** — everything after `code=` and before `&state`
+
+⚠️ This code expires in **60 seconds** — move to Step 2 immediately
+
+---
+
+## Step 2 — Exchange Code for Access Token
+
+Run this immediately after getting the code:
+```powershell
+$code = "PASTE_YOUR_CODE_HERE"
+$clientId = "YOUR_CLIENT_ID"
+$clientSecret = "YOUR_CLIENT_SECRET"
+$redirectUri = "YOUR_REDIRECT_URI"
+
+$body = @{
+    grant_type    = "authorization_code"
+    code          = $code
+    client_id     = $clientId
+    client_secret = $clientSecret
+    redirect_uri  = $redirectUri
+}
+
+$token = Invoke-RestMethod -Method POST -Uri "https://www.linkedin.com/oauth/v2/accessToken" -Body $body -ContentType "application/x-www-form-urlencoded"
+$token
+```
+
+**Successful output looks like:**
+```
+access_token : AQVa7-O47q8HZBes......
+expires_in   : 5183999
+scope        : email,openid,profile,w_member_social
+token_type   : Bearer
+id_token     : eyJraWQi......
+```
+
+- `access_token` → use this to make API calls (valid for ~60 days)
+- `expires_in` → seconds until token expires
+- `scope` → permissions granted
+
+---
+
+## Step 3 — Get Your Profile and URN
+
+```powershell
+$accessToken = $token.access_token
+$headers = @{ Authorization = "Bearer $accessToken" }
+$u = Invoke-RestMethod -Method GET -Uri "https://api.linkedin.com/v2/userinfo" -Headers $headers
+$u
+```
+
+**Output looks like:**
+```
+sub            : 12d232226Z
+name           : User name
+given_name     : user nume
+family_name    : family name
+picture        : https://media.licdn.com/...
+email          : email@example.com
+email_verified : True
+locale         : en_US
+```
+
+- `$u.sub` → this is your LinkedIn member ID
+- Your full URN = `urn:li:person:` + `$u.sub`
+- Example: `urn:li:person:12d232226Z`
+
+To print your URN:
+```powershell
+"urn:li:person:$($u.sub)"
+```
+
+---
+
+## Common Errors and Fixes
+
+**400 Bad Request on token exchange**
+- Code expired — you took more than 60 seconds
+- Code already used — each code works only once
+- Fix: go back to Step 1 and get a fresh code immediately
+
+**Invalid state format**
+- This happens when n8n intercepts the redirect
+- n8n replaces `state=123456` with its own encrypted state token
+- The error page is from n8n, not LinkedIn — ignore it
+- The code in the URL is still valid — copy it and use it
+
+**`u` is not recognized**
+- You forgot the `$` sign
+- Always use `$u` not `u`
+
+**401 Unauthorized on API call**
+- You used `$accessToken` before setting it from `$token.access_token`
+- Fix: run `$accessToken = $token.access_token` first
+
+**Scope errors / missing permissions**
+- You requested a scope your app doesn't have access to
+- Fix: go to your app's Products tab and request the needed product
+
+---
+
+## Summary of what each value is and where it comes from
+
+| Value | What it is | Where to get it |
+|---|---|---|
+| Client ID | Your app's public identifier | LinkedIn Developer App → Auth tab |
+| Client Secret | Your app's private key | LinkedIn Developer App → Auth tab |
+| Redirect URI | Where LinkedIn sends the code | You define it in Auth tab |
+| Code | Temporary one-time auth code | From the redirect URL after login |
+| Access Token | Key to call the API | Returned after exchanging the code |
+| URN | Your LinkedIn member ID | `$u.sub` from userinfo API |
